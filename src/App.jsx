@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Flame,
   Shield,
@@ -11,155 +11,125 @@ import {
   ArrowRight,
   Layers3,
   ListChecks,
+  AlertTriangle,
 } from "lucide-react";
-
-const BOOKS = [
-  {
-    id: "engine-co",
-    code: "FDNY-EC",
-    title: "Engine Company Operations",
-    icon: Flame,
-    cards: [
-      { q: "What is the first hoseline priority on arrival at a reported fire in a multiple dwelling?", a: "Stretch to the fire floor, protecting the interior stairs and any occupants above the fire before extending further." },
-      { q: "What's the standard operating pressure for a 1¾\" handline with a smooth bore tip?", a: "50 psi at the tip, adjusted for hose length and elevation." },
-      { q: "Why does the engine company avoid shutting down a line once water is flowing on a body of fire?", a: "Interrupting flow lets heat and fire regain ground and can result in a steam burn hazard to interior crews." },
-      { q: "What determines whether to stretch to the floor below vs. the fire floor?", a: "Uncertainty about fire location, heavy smoke conditions, or an untenable stairwell — stretch to the floor below and work up." },
-      { q: "What's the purpose of a second hoseline at a working fire?", a: "Backup protection for the attack line and crew, and coverage for extension or exposure protection." },
-      { q: "What does 'water on the fire' as a radio transmission confirm?", a: "That the attack line is operating and has reached the seat of the fire — a key benchmark for command." },
-    ],
-    questions: [
-      { q: "On arrival at a reported fire in a multiple dwelling, what's the first hoseline priority?", options: ["Stretch to the floor above the fire", "Stretch to the fire floor, protecting the interior stairs", "Stretch to the exterior for a defensive position", "Wait for the second-due engine before stretching"], correct: 1 },
-      { q: "What's the standard operating pressure for a 1¾\" handline with a smooth bore tip?", options: ["25 psi at the tip", "50 psi at the tip", "80 psi at the tip", "100 psi at the tip"], correct: 1 },
-      { q: "Why does an engine company avoid shutting down a line once water is flowing on a body of fire?", options: ["It wastes water pressure", "It can cause nozzle damage", "Interrupting flow can let fire regain ground and create a steam burn hazard", "Department policy requires continuous flow only"], correct: 2 },
-      { q: "What determines whether to stretch to the floor below vs. the fire floor?", options: ["The size of the building", "Time of day", "Uncertainty about fire location or an untenable stairwell", "Number of personnel on scene"], correct: 2 },
-      { q: "What does 'water on the fire' confirm over the radio?", options: ["The hydrant is supplying water", "The attack line is operating and has reached the seat of the fire", "The fire is fully extinguished", "A second line has been stretched"], correct: 1 },
-    ],
-  },
-  {
-    id: "truck-co",
-    code: "FDNY-TC",
-    title: "Truck Company Operations",
-    icon: Shield,
-    cards: [
-      { q: "What are the four basic truck company functions on the fireground?", a: "Forcible entry, search, ventilation, and ladders." },
-      { q: "When is vent-enter-search (VES) an appropriate tactic?", a: "When there's a known or likely victim in a room with exterior access and the fire isn't between the crew and the escape route." },
-      { q: "What's the danger of venting a window before the attack line is in position?", a: "It can accelerate fire growth by feeding oxygen to the fire before there's water to control it." },
-      { q: "What's the primary search priority in a residential structure?", a: "Areas closest to the fire and areas where occupants are most likely to be — bedrooms, especially at night." },
-      { q: "Why does the outside vent (OV) position check the rear and exposures before going to the front?", a: "To identify fire location, victims, and secondary means of egress command may not see from the street." },
-    ],
-    questions: [
-      { q: "What are the four basic truck company functions on the fireground?", options: ["Pumping, hydrants, hose, nozzles", "Forcible entry, search, ventilation, ladders", "Command, control, communication, coordination", "Overhaul, salvage, ventilation, rehab"], correct: 1 },
-      { q: "When is vent-enter-search (VES) an appropriate tactic?", options: ["Whenever a window is accessible", "Only after the fire is fully knocked down", "When there's a likely victim in a room with exterior access and fire isn't between crew and escape route", "Only on single-family homes"], correct: 2 },
-      { q: "What's the danger of venting a window before the attack line is in position?", options: ["It can accelerate fire growth by feeding oxygen before there's water to control it", "It reduces visibility for search crews", "It voids the department's SOP", "It has no significant fireground effect"], correct: 0 },
-      { q: "What's the primary search priority in a residential structure?", options: ["Basements first", "Areas closest to the fire and where occupants are most likely to be", "The attic", "Exterior perimeter"], correct: 1 },
-    ],
-  },
-  {
-    id: "building-con",
-    code: "FDNY-BC",
-    title: "Building Construction",
-    icon: Layers,
-    cards: [
-      { q: "Why is lightweight wood truss construction considered high-risk for early collapse?", a: "Gusset-plate connections fail quickly under fire exposure, and the whole truss system can fail as a unit with little warning." },
-      { q: "What's the main structural concern with Type II (noncombustible) construction during a fire?", a: "Unprotected steel loses strength rapidly under heat and can warp or collapse without the fire load of combustible construction." },
-      { q: "What is a cockloft, and why does it matter for fire spread?", a: "The concealed space between the top-floor ceiling and the roof — fire can travel through it undetected across an entire building." },
-      { q: "Why do older Type III (ordinary) buildings pose an extension risk between buildings?", a: "Shared or close exterior walls and common cocklofts let fire travel laterally between adjoining structures." },
-      { q: "What is a key sign of potential floor collapse a firefighter should check for on arrival?", a: "Soft, spongy, or sagging flooring, along with visible fire showing from lower floors or basement." },
-    ],
-    questions: [
-      { q: "Why is lightweight wood truss construction considered high-risk for early collapse?", options: ["It's more expensive to inspect", "Gusset-plate connections fail quickly under fire and the truss system can fail as a unit", "It's more prone to water damage", "It requires special ladders"], correct: 1 },
-      { q: "What's the main structural concern with Type II (noncombustible) construction during a fire?", options: ["It burns faster than wood", "Unprotected steel loses strength rapidly under heat and can collapse with little fire load", "It has no roof access", "It always includes a basement"], correct: 1 },
-      { q: "What is a cockloft, and why does it matter for fire spread?", options: ["A rooftop mechanical room; irrelevant to fire spread", "The concealed space between the top-floor ceiling and roof, where fire can travel undetected", "A type of exterior stairwell", "A storage area found only in commercial buildings"], correct: 1 },
-      { q: "What's a key sign of potential floor collapse on arrival?", options: ["Closed windows", "Soft, spongy, or sagging flooring with fire showing from lower floors", "Smoke color alone", "A locked front door"], correct: 1 },
-    ],
-  },
-  {
-    id: "ics",
-    code: "FDNY-ICS",
-    title: "Incident Command System",
-    icon: BookOpen,
-    cards: [
-      { q: "Who has overall authority for an incident once command is established?", a: "The Incident Commander, until command is formally transferred." },
-      { q: "What's the purpose of a formal command transfer over the radio?", a: "It ensures continuity of strategy and accountability — the incoming IC must be briefed before transfer is confirmed." },
-      { q: "What is a division used for at a high-rise incident?", a: "Geographic organization of resources, typically assigned by floor or floor group." },
-      { q: "When would command declare a defensive strategy?", a: "When interior conditions are untenable or structural collapse risk outweighs the benefit of an interior attack." },
-      { q: "What's the function of a staging area at a working incident?", a: "It holds uncommitted resources close to the scene until command assigns them, preventing freelancing and resource gaps." },
-    ],
-    questions: [
-      { q: "Who has overall authority for an incident once command is established?", options: ["The first-arriving officer, permanently", "The Incident Commander, until command is formally transferred", "Dispatch", "The highest-ranking chief regardless of arrival order"], correct: 1 },
-      { q: "What's the purpose of a formal command transfer over the radio?", options: ["It's a courtesy with no operational effect", "It ensures continuity of strategy — incoming IC must be briefed before transfer is confirmed", "It reassigns all units automatically", "It ends the incident report"], correct: 1 },
-      { q: "What is a division used for at a high-rise incident?", options: ["Tracking apparatus fuel levels", "Geographic organization of resources, typically by floor or floor group", "Assigning press liaisons", "Naming the incident for records"], correct: 1 },
-      { q: "What's the function of a staging area at a working incident?", options: ["Holds uncommitted resources near the scene until command assigns them, preventing freelancing", "Where command posts are always located", "A rehab zone exclusively for EMS", "The area where press is briefed"], correct: 0 },
-    ],
-  },
-];
-
+import { fetchLibrary, fetchSectionContent } from "./lib/supabase";
+ 
+const CHAPTER_ICONS = [Flame, Shield, Layers, BookOpen];
+ 
 export default function App() {
-  const [screen, setScreen] = useState("select-book"); // select-book | select-mode | generating | study | quiz | complete
-  const [activeBook, setActiveBook] = useState(null);
+  // library state
+  const [library, setLibrary] = useState(null); // chapters w/ sections, from Supabase
+  const [libraryError, setLibraryError] = useState(null);
+  const [libraryLoading, setLibraryLoading] = useState(true);
+ 
+  // navigation
+  const [screen, setScreen] = useState("select-chapter");
+  // select-chapter | select-section | select-mode | generating | study | quiz | complete
+  const [activeChapter, setActiveChapter] = useState(null);
+  const [activeSection, setActiveSection] = useState(null);
   const [mode, setMode] = useState(null); // "flashcards" | "quiz"
-
+ 
+  // active section content (flashcards/quiz), fetched on demand
+  const [content, setContent] = useState(null);
+  const [contentError, setContentError] = useState(null);
+ 
   // flashcard state
   const [cardIndex, setCardIndex] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [known, setKnown] = useState(0);
   const [review, setReview] = useState(0);
-
+ 
   // quiz state
   const [qIndex, setQIndex] = useState(0);
   const [selected, setSelected] = useState(null);
   const [answered, setAnswered] = useState(false);
   const [correctCount, setCorrectCount] = useState(0);
-
-  function chooseBook(book) {
-    setActiveBook(book);
+ 
+  useEffect(() => {
+    let cancelled = false;
+    fetchLibrary()
+      .then((data) => {
+        if (!cancelled) {
+          setLibrary(data);
+          setLibraryLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setLibraryError(err.message || "Failed to load the library.");
+          setLibraryLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+ 
+  const cards = content?.flashcards || [];
+  const questions = content?.quiz_questions || [];
+ 
+  function chooseChapter(chapter) {
+    setActiveChapter(chapter);
+    setScreen("select-section");
+  }
+ 
+  function chooseSection(section) {
+    setActiveSection(section);
     setScreen("select-mode");
   }
-
+ 
   function chooseMode(selectedMode) {
     setMode(selectedMode);
     setScreen("generating");
-    setTimeout(() => {
-      if (selectedMode === "flashcards") {
-        setCardIndex(0);
-        setFlipped(false);
-        setKnown(0);
-        setReview(0);
-        setScreen("study");
-      } else {
-        setQIndex(0);
-        setSelected(null);
-        setAnswered(false);
-        setCorrectCount(0);
-        setScreen("quiz");
-      }
-    }, 1100);
+    setContentError(null);
+    fetchSectionContent(activeSection.id)
+      .then((data) => {
+        setContent(data);
+        if (selectedMode === "flashcards") {
+          setCardIndex(0);
+          setFlipped(false);
+          setKnown(0);
+          setReview(0);
+          setScreen("study");
+        } else {
+          setQIndex(0);
+          setSelected(null);
+          setAnswered(false);
+          setCorrectCount(0);
+          setScreen("quiz");
+        }
+      })
+      .catch((err) => {
+        setContentError(err.message || "Failed to load this section's content.");
+        setScreen("select-mode");
+      });
   }
-
+ 
   function markCard(gotIt) {
     if (gotIt) setKnown((k) => k + 1);
     else setReview((r) => r + 1);
     const next = cardIndex + 1;
-    if (next >= activeBook.cards.length) {
+    if (next >= cards.length) {
       setScreen("complete");
     } else {
       setCardIndex(next);
       setFlipped(false);
     }
   }
-
+ 
   function pick(i) {
     if (answered) return;
     setSelected(i);
     setAnswered(true);
-    if (i === activeBook.questions[qIndex].correct) {
+    if (i === questions[qIndex].correct_index) {
       setCorrectCount((c) => c + 1);
     }
   }
-
+ 
   function nextQuestion() {
     const next = qIndex + 1;
-    if (next >= activeBook.questions.length) {
+    if (next >= questions.length) {
       setScreen("complete");
     } else {
       setQIndex(next);
@@ -167,19 +137,33 @@ export default function App() {
       setAnswered(false);
     }
   }
-
+ 
   function backToModes() {
     setScreen("select-mode");
   }
-
-  function resetAll() {
-    setScreen("select-book");
-    setActiveBook(null);
-    setMode(null);
+ 
+  function backToSections() {
+    setActiveSection(null);
+    setScreen("select-section");
   }
-
-  const q = activeBook && mode === "quiz" ? activeBook.questions[qIndex] : null;
-
+ 
+  function resetAll() {
+    setScreen("select-chapter");
+    setActiveChapter(null);
+    setActiveSection(null);
+    setMode(null);
+    setContent(null);
+  }
+ 
+  const q = mode === "quiz" ? questions[qIndex] : null;
+ 
+  const headerTitle = useMemo(() => {
+    if (mode === "quiz" && (screen === "quiz" || screen === "complete")) return "Quiz";
+    if (mode === "flashcards" && (screen === "study" || screen === "complete")) return "Flashcards";
+    if (screen === "select-section") return "Sections";
+    return "Study";
+  }, [mode, screen]);
+ 
   return (
     <div className="min-h-screen bg-[#1B1A18] text-[#EDE8DE] flex flex-col">
       <div
@@ -189,11 +173,27 @@ export default function App() {
             "repeating-linear-gradient(45deg, #C9A227 0px, #C9A227 14px, #1B1A18 14px, #1B1A18 28px)",
         }}
       />
-
+ 
       <header className="px-5 pt-5 pb-4 flex items-center gap-3 border-b border-[#3A362F]">
-        {screen === "select-mode" || screen === "study" || screen === "quiz" || screen === "complete" ? (
+        {screen === "select-section" ? (
           <button
-            onClick={screen === "select-mode" ? resetAll : backToModes}
+            onClick={resetAll}
+            className="p-1.5 -ml-1.5 rounded hover:bg-white/5 active:scale-95 transition"
+            aria-label="Back"
+          >
+            <ChevronLeft className="w-5 h-5 text-[#C9A227]" />
+          </button>
+        ) : screen === "select-mode" ? (
+          <button
+            onClick={backToSections}
+            className="p-1.5 -ml-1.5 rounded hover:bg-white/5 active:scale-95 transition"
+            aria-label="Back"
+          >
+            <ChevronLeft className="w-5 h-5 text-[#C9A227]" />
+          </button>
+        ) : screen === "study" || screen === "quiz" || screen === "complete" ? (
+          <button
+            onClick={backToModes}
             className="p-1.5 -ml-1.5 rounded hover:bg-white/5 active:scale-95 transition"
             aria-label="Back"
           >
@@ -207,55 +207,110 @@ export default function App() {
             FDNY · Proof of Concept
           </div>
           <h1 className="text-lg font-black uppercase tracking-wide leading-tight">
-            {mode === "quiz" && (screen === "quiz" || screen === "complete") ? "Quiz" :
-             mode === "flashcards" && (screen === "study" || screen === "complete") ? "Flashcards" :
-             "Study"}
+            {headerTitle}
           </h1>
         </div>
       </header>
-
+ 
       <main className="flex-1 px-5 py-5 flex flex-col">
-        {screen === "select-book" && (
+        {screen === "select-chapter" && (
           <div className="flex flex-col gap-3">
             <p className="text-sm text-[#8B857A] mb-1">
-              Pick a manual. Flashcards and quizzes are both generated from that book's material.
+              Pick a chapter. Flashcards and quizzes are generated from that material, section by section.
             </p>
-            {BOOKS.map((book) => {
-              const Icon = book.icon;
-              return (
-                <button
-                  key={book.id}
-                  onClick={() => chooseBook(book)}
-                  className="group flex items-center gap-4 bg-[#24221F] border border-[#3A362F] rounded-md px-4 py-4 text-left hover:border-[#C9A227] active:scale-[0.98] transition"
-                >
-                  <div className="shrink-0 w-11 h-11 rounded-sm bg-[#1B1A18] border border-[#3A362F] flex items-center justify-center group-hover:border-[#C9A227] transition">
-                    <Icon className="w-5 h-5 text-[#C8352E]" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[10px] tracking-[0.2em] text-[#C9A227] font-bold uppercase">
-                      {book.code}
+ 
+            {libraryLoading && (
+              <div className="flex-1 flex flex-col items-center justify-center gap-3 py-16 text-center">
+                <div className="w-10 h-10 rounded-full border-2 border-[#3A362F] border-t-[#C9A227] animate-spin" />
+                <div className="text-xs text-[#8B857A] uppercase tracking-wide">Loading library</div>
+              </div>
+            )}
+ 
+            {libraryError && (
+              <div className="flex items-start gap-3 bg-[#2A1E1C] border border-[#C8352E] rounded-md px-4 py-3">
+                <AlertTriangle className="w-4 h-4 text-[#C8352E] shrink-0 mt-0.5" />
+                <div className="text-sm text-[#EDE8DE]">
+                  Couldn't load the library: {libraryError}
+                </div>
+              </div>
+            )}
+ 
+            {library &&
+              library.map((chapter, idx) => {
+                const Icon = CHAPTER_ICONS[idx % CHAPTER_ICONS.length];
+                const sectionCount = chapter.sections.length;
+                return (
+                  <button
+                    key={chapter.id}
+                    onClick={() => chooseChapter(chapter)}
+                    disabled={sectionCount === 0}
+                    className="group flex items-center gap-4 bg-[#24221F] border border-[#3A362F] rounded-md px-4 py-4 text-left hover:border-[#C9A227] active:scale-[0.98] transition disabled:opacity-40 disabled:pointer-events-none"
+                  >
+                    <div className="shrink-0 w-11 h-11 rounded-sm bg-[#1B1A18] border border-[#3A362F] flex items-center justify-center group-hover:border-[#C9A227] transition">
+                      <Icon className="w-5 h-5 text-[#C8352E]" />
                     </div>
-                    <div className="font-bold leading-snug">{book.title}</div>
-                    <div className="text-xs text-[#8B857A] mt-0.5">
-                      {book.cards.length} flashcards · {book.questions.length} quiz questions
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[10px] tracking-[0.2em] text-[#C9A227] font-bold uppercase">
+                        {chapter.chapter_key}
+                      </div>
+                      <div className="font-bold leading-snug">{chapter.chapter_name}</div>
+                      <div className="text-xs text-[#8B857A] mt-0.5">
+                        {sectionCount} section{sectionCount === 1 ? "" : "s"}
+                      </div>
                     </div>
-                  </div>
-                  <ArrowRight className="w-4 h-4 text-[#8B857A] group-hover:text-[#C9A227] group-hover:translate-x-0.5 transition shrink-0" />
-                </button>
-              );
-            })}
+                    <ArrowRight className="w-4 h-4 text-[#8B857A] group-hover:text-[#C9A227] group-hover:translate-x-0.5 transition shrink-0" />
+                  </button>
+                );
+              })}
           </div>
         )}
-
-        {screen === "select-mode" && activeBook && (
+ 
+        {screen === "select-section" && activeChapter && (
           <div className="flex-1 flex flex-col">
             <div className="mb-5">
               <div className="text-[10px] tracking-[0.2em] text-[#C9A227] font-bold uppercase">
-                {activeBook.code}
+                {activeChapter.chapter_key}
               </div>
-              <div className="font-bold text-lg leading-snug">{activeBook.title}</div>
+              <div className="font-bold text-lg leading-snug">{activeChapter.chapter_name}</div>
             </div>
-            <p className="text-sm text-[#8B857A] mb-4">Choose how you want to study this book.</p>
+            <p className="text-sm text-[#8B857A] mb-4">Choose a section to study.</p>
+            <div className="flex flex-col gap-2.5 overflow-y-auto">
+              {activeChapter.sections.map((section) => (
+                <button
+                  key={section.id}
+                  onClick={() => chooseSection(section)}
+                  className="group flex items-center gap-3 bg-[#24221F] border border-[#3A362F] rounded-md px-4 py-3.5 text-left hover:border-[#C9A227] active:scale-[0.98] transition"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[10px] tracking-[0.2em] text-[#8B857A] font-bold uppercase">
+                      §{section.section_number}
+                    </div>
+                    <div className="font-bold text-sm leading-snug">{section.section_title}</div>
+                  </div>
+                  <ArrowRight className="w-4 h-4 text-[#8B857A] group-hover:text-[#C9A227] group-hover:translate-x-0.5 transition shrink-0" />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+ 
+        {screen === "select-mode" && activeSection && (
+          <div className="flex-1 flex flex-col">
+            <div className="mb-5">
+              <div className="text-[10px] tracking-[0.2em] text-[#C9A227] font-bold uppercase">
+                §{activeSection.section_number}
+              </div>
+              <div className="font-bold text-lg leading-snug">{activeSection.section_title}</div>
+            </div>
+            <p className="text-sm text-[#8B857A] mb-4">Choose how you want to study this section.</p>
+ 
+            {contentError && (
+              <div className="flex items-start gap-3 bg-[#2A1E1C] border border-[#C8352E] rounded-md px-4 py-3 mb-4">
+                <AlertTriangle className="w-4 h-4 text-[#C8352E] shrink-0 mt-0.5" />
+                <div className="text-sm text-[#EDE8DE]">{contentError}</div>
+              </div>
+            )}
+ 
             <div className="flex flex-col gap-3">
               <button
                 onClick={() => chooseMode("flashcards")}
@@ -267,7 +322,7 @@ export default function App() {
                 <div className="flex-1 min-w-0">
                   <div className="font-bold leading-snug">Flashcards</div>
                   <div className="text-xs text-[#8B857A] mt-0.5">
-                    Flip through {activeBook.cards.length} cards at your own pace
+                    Flip through this section's flashcards at your own pace
                   </div>
                 </div>
                 <ArrowRight className="w-4 h-4 text-[#8B857A] group-hover:text-[#C9A227] group-hover:translate-x-0.5 transition shrink-0" />
@@ -281,45 +336,43 @@ export default function App() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="font-bold leading-snug">Quiz</div>
-                  <div className="text-xs text-[#8B857A] mt-0.5">
-                    {activeBook.questions.length} multiple-choice questions
-                  </div>
+                  <div className="text-xs text-[#8B857A] mt-0.5">Multiple-choice questions from this section</div>
                 </div>
                 <ArrowRight className="w-4 h-4 text-[#8B857A] group-hover:text-[#C9A227] group-hover:translate-x-0.5 transition shrink-0" />
               </button>
             </div>
           </div>
         )}
-
-        {screen === "generating" && activeBook && (
+ 
+        {screen === "generating" && activeSection && (
           <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center">
             <div className="w-12 h-12 rounded-full border-2 border-[#3A362F] border-t-[#C9A227] animate-spin" />
             <div>
               <div className="font-bold uppercase tracking-wide text-sm">
-                Generating {mode === "quiz" ? "quiz" : "flashcards"} from {activeBook.title}
+                Loading {mode === "quiz" ? "quiz" : "flashcards"} for {activeSection.section_title}
               </div>
-              <div className="text-xs text-[#8B857A] mt-1">Pulling key material and building your set</div>
+              <div className="text-xs text-[#8B857A] mt-1">Pulling your study set</div>
             </div>
           </div>
         )}
-
-        {screen === "study" && activeBook && (
+ 
+        {screen === "study" && activeSection && cards.length > 0 && (
           <div className="flex-1 flex flex-col">
             <div className="flex items-center justify-between mb-3">
               <span className="text-[10px] tracking-[0.2em] text-[#8B857A] font-bold uppercase">
-                {activeBook.code}-{String(cardIndex + 1).padStart(2, "0")}
+                §{activeSection.section_number}-{String(cardIndex + 1).padStart(2, "0")}
               </span>
               <span className="text-[10px] tracking-[0.2em] text-[#8B857A] font-bold uppercase">
-                {cardIndex + 1} / {activeBook.cards.length}
+                {cardIndex + 1} / {cards.length}
               </span>
             </div>
             <div className="w-full h-1 bg-[#3A362F] rounded-full mb-6 overflow-hidden">
               <div
                 className="h-full bg-[#C8352E] transition-all duration-300"
-                style={{ width: `${(cardIndex / activeBook.cards.length) * 100}%` }}
+                style={{ width: `${(cardIndex / cards.length) * 100}%` }}
               />
             </div>
-
+ 
             <button
               onClick={() => setFlipped((f) => !f)}
               className="flex-1 min-h-[280px] bg-[#24221F] border-2 border-[#3A362F] rounded-lg p-6 flex flex-col justify-center items-center text-center relative active:scale-[0.99] transition"
@@ -329,11 +382,16 @@ export default function App() {
               </span>
               <RotateCw className="absolute top-3 right-3 w-3.5 h-3.5 text-[#8B857A]" />
               <p className="text-base leading-relaxed font-medium px-2">
-                {flipped ? activeBook.cards[cardIndex].a : activeBook.cards[cardIndex].q}
+                {flipped ? cards[cardIndex].back : cards[cardIndex].front}
               </p>
+              {flipped && cards[cardIndex].citation && (
+                <span className="text-[10px] text-[#8B857A] mt-3 tracking-wide">
+                  {cards[cardIndex].citation}
+                </span>
+              )}
               {!flipped && <span className="text-xs text-[#8B857A] mt-5">Tap to reveal answer</span>}
             </button>
-
+ 
             {flipped && (
               <div className="grid grid-cols-2 gap-3 mt-4">
                 <button
@@ -352,31 +410,31 @@ export default function App() {
             )}
           </div>
         )}
-
-        {screen === "quiz" && q && activeBook && (
+ 
+        {screen === "quiz" && q && activeSection && (
           <div className="flex-1 flex flex-col">
             <div className="flex items-center justify-between mb-3">
               <span className="text-[10px] tracking-[0.2em] text-[#8B857A] font-bold uppercase">
-                {activeBook.code}-Q{String(qIndex + 1).padStart(2, "0")}
+                §{activeSection.section_number}-Q{String(qIndex + 1).padStart(2, "0")}
               </span>
               <span className="text-[10px] tracking-[0.2em] text-[#8B857A] font-bold uppercase">
-                {qIndex + 1} / {activeBook.questions.length}
+                {qIndex + 1} / {questions.length}
               </span>
             </div>
             <div className="w-full h-1 bg-[#3A362F] rounded-full mb-6 overflow-hidden">
               <div
                 className="h-full bg-[#C8352E] transition-all duration-300"
-                style={{ width: `${(qIndex / activeBook.questions.length) * 100}%` }}
+                style={{ width: `${(qIndex / questions.length) * 100}%` }}
               />
             </div>
-
+ 
             <div className="bg-[#24221F] border-2 border-[#3A362F] rounded-lg p-5 mb-4">
-              <p className="text-base leading-relaxed font-medium">{q.q}</p>
+              <p className="text-base leading-relaxed font-medium">{q.question}</p>
             </div>
-
+ 
             <div className="flex flex-col gap-2.5">
-              {q.options.map((opt, i) => {
-                const isCorrect = i === q.correct;
+              {q.choices.map((opt, i) => {
+                const isCorrect = i === q.correct_index;
                 const isSelected = i === selected;
                 let stateClasses = "border-[#3A362F] bg-[#24221F] hover:border-[#8B857A]";
                 if (answered && isCorrect) stateClasses = "border-[#C9A227] bg-[#C9A227]/10";
@@ -395,19 +453,25 @@ export default function App() {
                 );
               })}
             </div>
-
+ 
+            {answered && q.explanation && (
+              <div className="mt-4 bg-[#24221F] border border-[#3A362F] rounded-md px-4 py-3 text-sm text-[#8B857A] leading-relaxed">
+                {q.explanation}
+              </div>
+            )}
+ 
             {answered && (
               <button
                 onClick={nextQuestion}
                 className="mt-5 py-3 rounded-md bg-[#C9A227] text-[#1B1A18] font-bold text-sm uppercase tracking-wide active:scale-[0.97] transition"
               >
-                {qIndex + 1 >= activeBook.questions.length ? "See results" : "Next question"}
+                {qIndex + 1 >= questions.length ? "See results" : "Next question"}
               </button>
             )}
           </div>
         )}
-
-        {screen === "complete" && activeBook && (
+ 
+        {screen === "complete" && activeSection && (
           <div className="flex-1 flex flex-col items-center justify-center text-center gap-5">
             <div className="w-14 h-14 rounded-sm border-2 border-[#C9A227] flex items-center justify-center">
               <Check className="w-7 h-7 text-[#C9A227]" />
@@ -416,13 +480,13 @@ export default function App() {
               <div className="font-black uppercase tracking-wide text-lg">
                 {mode === "quiz" ? "Quiz complete" : "Deck complete"}
               </div>
-              <div className="text-sm text-[#8B857A] mt-1">{activeBook.title}</div>
+              <div className="text-sm text-[#8B857A] mt-1">{activeSection.section_title}</div>
             </div>
-
+ 
             {mode === "quiz" ? (
               <div>
                 <div className="text-3xl font-black text-[#C9A227]">
-                  {correctCount} / {activeBook.questions.length}
+                  {correctCount} / {questions.length}
                 </div>
                 <div className="text-[10px] tracking-[0.2em] text-[#8B857A] font-bold uppercase mt-1">
                   Correct
@@ -444,7 +508,7 @@ export default function App() {
                 </div>
               </div>
             )}
-
+ 
             <div className="flex flex-col gap-2 w-full max-w-xs mt-2">
               <button
                 onClick={() => chooseMode(mode)}
@@ -459,10 +523,16 @@ export default function App() {
                 Switch mode
               </button>
               <button
+                onClick={backToSections}
+                className="py-3 rounded-md border border-[#3A362F] font-bold text-sm uppercase tracking-wide hover:border-[#C9A227] active:scale-[0.97] transition"
+              >
+                Choose another section
+              </button>
+              <button
                 onClick={resetAll}
                 className="py-3 rounded-md border border-[#3A362F] font-bold text-sm uppercase tracking-wide hover:border-[#C9A227] active:scale-[0.97] transition"
               >
-                Choose another book
+                Choose another chapter
               </button>
             </div>
           </div>
@@ -471,3 +541,4 @@ export default function App() {
     </div>
   );
 }
+ 
