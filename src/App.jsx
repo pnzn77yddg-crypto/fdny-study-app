@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Flame,
   ChevronLeft,
@@ -11,6 +11,11 @@ import {
   ListChecks,
   AlertTriangle,
   BookOpen,
+  Volume2,
+  Play,
+  Pause,
+  SkipForward,
+  SkipBack,
 } from "lucide-react";
 import {
   fetchLibrary,
@@ -19,6 +24,47 @@ import {
   sampleRandom,
   sizeOptions,
 } from "./lib/supabase";
+
+const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
+const DELAY_OPTIONS = [3, 5, 8, 10, 15];
+
+// Speaks `text` and resolves when speech finishes (or immediately if TTS
+// isn't available). Resolves on error too, so a bad utterance never stalls
+// the sequence.
+function speakAsync(text) {
+  return new Promise((resolve) => {
+    if (!ttsSupported || !text) {
+      resolve();
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = 0.95;
+    utter.onend = resolve;
+    utter.onerror = resolve;
+    window.speechSynthesis.speak(utter);
+  });
+}
+
+// Counts down from `seconds`, calling onTick each second, and resolves at 0.
+function countdownAsync(seconds, onTick) {
+  return new Promise((resolve) => {
+    let remaining = seconds;
+    onTick(remaining);
+    if (remaining <= 0) {
+      resolve();
+      return;
+    }
+    const interval = setInterval(() => {
+      remaining -= 1;
+      onTick(remaining);
+      if (remaining <= 0) {
+        clearInterval(interval);
+        resolve();
+      }
+    }, 1000);
+  });
+}
 
 export default function App() {
   // library state
@@ -51,6 +97,14 @@ export default function App() {
   const [selected, setSelected] = useState(null);
   const [answered, setAnswered] = useState(false);
   const [correctCount, setCorrectCount] = useState(0);
+
+  // audio flashcard state
+  const [answerDelay, setAnswerDelay] = useState(5);
+  const [audioIndex, setAudioIndex] = useState(0);
+  const [audioPlaying, setAudioPlaying] = useState(true);
+  const [audioPhase, setAudioPhase] = useState("question"); // question | delay | answer | pause
+  const [countdown, setCountdown] = useState(0);
+  const audioRunRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -124,6 +178,73 @@ export default function App() {
       });
   }
 
+  function chooseAudioMode() {
+    setMode("audio");
+    setScreen("generating");
+    ensurePool(activeTarget)
+      .then((loaded) => {
+        setCards(sampleRandom(loaded.flashcards, size));
+        setAudioIndex(0);
+        setAudioPlaying(true);
+        setAudioPhase("question");
+        setCountdown(answerDelay);
+        setScreen("audio-study");
+      })
+      .catch((err) => {
+        setPoolError(err.message || "Failed to load this content.");
+        setScreen("select-mode");
+      });
+  }
+
+  // Drives one card's full audio sequence: question -> delay countdown ->
+  // answer -> short pause -> advance. Re-runs whenever the current card,
+  // play state, or screen changes; the cleanup function cancels speech and
+  // invalidates the run so a paused/skipped/exited sequence never "finishes"
+  // into the wrong state.
+  useEffect(() => {
+    if (screen !== "audio-study" || !audioPlaying) return;
+    const card = cards[audioIndex];
+    if (!card) return;
+
+    const myRun = ++audioRunRef.current;
+    const isCurrent = () => audioRunRef.current === myRun;
+
+    (async () => {
+      setAudioPhase("question");
+      await speakAsync(card.front);
+      if (!isCurrent()) return;
+
+      setAudioPhase("delay");
+      await countdownAsync(answerDelay, (n) => isCurrent() && setCountdown(n));
+      if (!isCurrent()) return;
+
+      setAudioPhase("answer");
+      await speakAsync(card.back);
+      if (!isCurrent()) return;
+
+      setAudioPhase("pause");
+      await countdownAsync(1, () => {});
+      if (!isCurrent()) return;
+
+      if (audioIndex + 1 >= cards.length) {
+        setScreen("complete");
+      } else {
+        setAudioIndex((i) => i + 1);
+      }
+    })();
+
+    return () => {
+      audioRunRef.current++;
+      if (ttsSupported) window.speechSynthesis.cancel();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, audioIndex, audioPlaying, answerDelay]);
+
+  function audioSkip(dir) {
+    setAudioIndex((i) => Math.min(Math.max(i + dir, 0), cards.length - 1));
+    setAudioPlaying(true);
+  }
+
   function markCard(gotIt) {
     if (gotIt) setKnown((k) => k + 1);
     else setReview((r) => r + 1);
@@ -168,12 +289,15 @@ export default function App() {
   }
 
   const q = mode === "quiz" ? questions[qIndex] : null;
+  const audioCard = mode === "audio" ? cards[audioIndex] : null;
 
   const headerTitle =
     mode === "quiz" && (screen === "quiz" || screen === "complete")
       ? "Quiz"
       : mode === "flashcards" && (screen === "study" || screen === "complete")
       ? "Flashcards"
+      : mode === "audio" && (screen === "audio-study" || screen === "complete")
+      ? "Audio Flashcards"
       : screen === "select-mode"
       ? "Choose set"
       : "Study";
@@ -197,7 +321,7 @@ export default function App() {
           >
             <ChevronLeft className="w-5 h-5 text-[#C9A227]" />
           </button>
-        ) : screen === "study" || screen === "quiz" || screen === "complete" ? (
+        ) : screen === "study" || screen === "quiz" || screen === "audio-study" || screen === "complete" ? (
           <button
             onClick={backToModes}
             className="p-1.5 -ml-1.5 rounded hover:bg-white/5 active:scale-95 transition shrink-0"
@@ -399,7 +523,48 @@ export default function App() {
                 </div>
                 <ArrowRight className="w-4 h-4 text-[#8B857A] group-hover:text-[#C9A227] shrink-0" />
               </button>
+
+              <button
+                onClick={chooseAudioMode}
+                disabled={activeTarget.cardCount === 0 || !ttsSupported}
+                className="group flex items-center gap-4 bg-[#24221F] border border-[#3A362F] rounded-md px-4 py-5 text-left hover:border-[#C9A227] active:scale-[0.98] transition disabled:opacity-40 disabled:pointer-events-none min-w-0"
+              >
+                <div className="shrink-0 w-11 h-11 rounded-sm bg-[#1B1A18] border border-[#3A362F] flex items-center justify-center group-hover:border-[#C9A227] transition">
+                  <Volume2 className="w-5 h-5 text-[#C8352E]" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold leading-snug">Audio Flashcards</div>
+                  <div className="text-xs text-[#8B857A] mt-0.5 truncate">
+                    {ttsSupported
+                      ? `Hands-free · reads aloud, ${answerDelay}s pause before the answer`
+                      : "Not supported on this browser"}
+                  </div>
+                </div>
+                <ArrowRight className="w-4 h-4 text-[#8B857A] group-hover:text-[#C9A227] shrink-0" />
+              </button>
             </div>
+
+            {ttsSupported && (
+              <div className="mt-5">
+                <label className="text-xs text-[#8B857A] uppercase tracking-wide font-bold mb-2 block">
+                  Audio answer delay
+                </label>
+                <div className="relative">
+                  <select
+                    value={answerDelay}
+                    onChange={(e) => setAnswerDelay(Number(e.target.value))}
+                    className="w-full appearance-none bg-[#24221F] border border-[#3A362F] rounded-md px-4 py-3 text-sm font-medium focus:outline-none focus:border-[#C9A227]"
+                  >
+                    {DELAY_OPTIONS.map((n) => (
+                      <option key={n} value={n}>
+                        {n} seconds
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-[#8B857A] absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -408,8 +573,9 @@ export default function App() {
             <div className="w-12 h-12 rounded-full border-2 border-[#3A362F] border-t-[#C9A227] animate-spin" />
             <div className="min-w-0">
               <div className="font-bold uppercase tracking-wide text-sm break-words">
-                {poolLoading ? "Loading" : "Building"} {mode === "quiz" ? "quiz" : "flashcards"} for{" "}
-                {activeTarget.name}
+                {poolLoading ? "Loading" : "Building"}{" "}
+                {mode === "quiz" ? "quiz" : mode === "audio" ? "audio flashcards" : "flashcards"}{" "}
+                for {activeTarget.name}
               </div>
               <div className="text-xs text-[#8B857A] mt-1">Pulling your random {size}-item set</div>
             </div>
@@ -531,6 +697,85 @@ export default function App() {
           </div>
         )}
 
+        {screen === "audio-study" && audioCard && (
+          <div className="flex-1 flex flex-col min-w-0">
+            <div className="flex items-center justify-between mb-3 gap-2">
+              <span className="text-[10px] tracking-[0.2em] text-[#8B857A] font-bold uppercase truncate">
+                {String(audioIndex + 1).padStart(2, "0")}
+              </span>
+              <span className="text-[10px] tracking-[0.2em] text-[#8B857A] font-bold uppercase shrink-0">
+                {audioIndex + 1} / {cards.length}
+              </span>
+            </div>
+            <div className="w-full h-1 bg-[#3A362F] rounded-full mb-6 overflow-hidden">
+              <div
+                className="h-full bg-[#C8352E] transition-all duration-300"
+                style={{ width: `${(audioIndex / cards.length) * 100}%` }}
+              />
+            </div>
+
+            <div className="flex-1 min-h-[280px] bg-[#24221F] border-2 border-[#3A362F] rounded-lg p-6 flex flex-col justify-center items-center text-center relative min-w-0">
+              <span className="absolute top-3 left-3 text-[9px] tracking-[0.2em] text-[#8B857A] font-bold uppercase">
+                {audioPhase === "answer" || audioPhase === "pause" ? "Answer" : "Question"}
+              </span>
+              <Volume2
+                className={`absolute top-3 right-3 w-3.5 h-3.5 ${
+                  audioPhase === "question" || audioPhase === "answer"
+                    ? "text-[#C9A227] animate-pulse"
+                    : "text-[#8B857A]"
+                }`}
+              />
+              <p className="text-base leading-relaxed font-medium px-2 break-words min-w-0">
+                {audioPhase === "answer" || audioPhase === "pause" ? audioCard.back : audioCard.front}
+              </p>
+
+              {audioPhase === "delay" && (
+                <div className="mt-6 flex flex-col items-center gap-1">
+                  <div className="text-3xl font-black text-[#C9A227]">{countdown}</div>
+                  <div className="text-[10px] tracking-[0.2em] text-[#8B857A] font-bold uppercase">
+                    Answer in...
+                  </div>
+                </div>
+              )}
+              {!audioPlaying && (
+                <div className="mt-6 text-xs text-[#8B857A] uppercase tracking-wide font-bold">
+                  Paused
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-center gap-4 mt-5">
+              <button
+                onClick={() => audioSkip(-1)}
+                disabled={audioIndex === 0}
+                className="p-3 rounded-full border border-[#3A362F] bg-[#24221F] hover:border-[#C9A227] active:scale-95 transition disabled:opacity-30 disabled:pointer-events-none"
+                aria-label="Previous card"
+              >
+                <SkipBack className="w-5 h-5 text-[#EDE8DE]" />
+              </button>
+              <button
+                onClick={() => setAudioPlaying((p) => !p)}
+                className="p-5 rounded-full bg-[#C9A227] hover:bg-[#C9A227]/90 active:scale-95 transition"
+                aria-label={audioPlaying ? "Pause" : "Play"}
+              >
+                {audioPlaying ? (
+                  <Pause className="w-6 h-6 text-[#1B1A18]" fill="#1B1A18" />
+                ) : (
+                  <Play className="w-6 h-6 text-[#1B1A18]" fill="#1B1A18" />
+                )}
+              </button>
+              <button
+                onClick={() => audioSkip(1)}
+                disabled={audioIndex >= cards.length - 1}
+                className="p-3 rounded-full border border-[#3A362F] bg-[#24221F] hover:border-[#C9A227] active:scale-95 transition disabled:opacity-30 disabled:pointer-events-none"
+                aria-label="Next card"
+              >
+                <SkipForward className="w-5 h-5 text-[#EDE8DE]" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {screen === "complete" && activeTarget && (
           <div className="flex-1 flex flex-col items-center justify-center text-center gap-5 px-2 min-w-0">
             <div className="w-14 h-14 rounded-sm border-2 border-[#C9A227] flex items-center justify-center shrink-0">
@@ -538,7 +783,7 @@ export default function App() {
             </div>
             <div className="min-w-0">
               <div className="font-black uppercase tracking-wide text-lg">
-                {mode === "quiz" ? "Quiz complete" : "Deck complete"}
+                {mode === "quiz" ? "Quiz complete" : mode === "audio" ? "Audio session complete" : "Deck complete"}
               </div>
               <div className="text-sm text-[#8B857A] mt-1 break-words">{activeTarget.name}</div>
             </div>
@@ -551,6 +796,10 @@ export default function App() {
                 <div className="text-[10px] tracking-[0.2em] text-[#8B857A] font-bold uppercase mt-1">
                   Correct
                 </div>
+              </div>
+            ) : mode === "audio" ? (
+              <div className="text-sm text-[#8B857A]">
+                {cards.length} card{cards.length === 1 ? "" : "s"} read aloud
               </div>
             ) : (
               <div className="flex gap-6">
@@ -571,10 +820,10 @@ export default function App() {
 
             <div className="flex flex-col gap-2 w-full max-w-xs mt-2">
               <button
-                onClick={() => chooseMode(mode)}
+                onClick={() => (mode === "audio" ? chooseAudioMode() : chooseMode(mode))}
                 className="py-3 rounded-md bg-[#C9A227] text-[#1B1A18] font-bold text-sm uppercase tracking-wide active:scale-[0.97] transition"
               >
-                {mode === "quiz" ? "New random quiz" : "New random set"}
+                {mode === "quiz" ? "New random quiz" : mode === "audio" ? "New random audio set" : "New random set"}
               </button>
               <button
                 onClick={backToModes}
