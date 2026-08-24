@@ -27,19 +27,118 @@ import {
 
 const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
 const DELAY_OPTIONS = [3, 5, 8, 10, 15];
+const VOICE_STORAGE_KEY = "fdny_voice_uri";
+const LIBRARY_CACHE_KEY = "fdny_library_cache_v1";
+const LAST_SESSION_KEY = "fdny_last_session_v1";
+
+function safeGetJSON(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+function safeSetJSON(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore — private browsing, storage full, etc.
+  }
+}
+
+function modeLabel(m) {
+  return m === "quiz" ? "Quiz" : m === "audio" ? "Audio Flashcards" : "Flashcards";
+}
+
+// Re-derives a fresh {id, name, cardCount, quizCount} target from the loaded
+// library given just an id — used to resume a saved session with current
+// (not stale) counts, and to build the "whole book" target on demand.
+function findTargetById(library, id) {
+  if (!library) return null;
+  if (id === "book") {
+    return {
+      id: "book",
+      name: library.bookTitle || "Entire Book",
+      cardCount: library.totalCards,
+      quizCount: library.totalQuiz,
+    };
+  }
+  for (const ch of library.chapters) {
+    if (ch.id === id) {
+      return { id: ch.id, name: ch.name, cardCount: ch.cardCount, quizCount: ch.quizCount };
+    }
+    const add = ch.addenda.find((a) => a.id === id);
+    if (add) return { id: add.id, name: add.name, cardCount: add.cardCount, quizCount: add.quizCount };
+  }
+  return null;
+}
+
+// Acronyms/abbreviations that show up in FDNY manual content and read badly
+// letter-by-letter unless we force it (e.g. "FDNY" said as one made-up word).
+const ACRONYMS = [
+  "FDNY", "SOP", "SOPs", "SCBA", "PPV", "GPM", "PSI", "EMS", "ICS", "IC",
+  "OSHA", "NFPA", "LODD", "MDC", "RIT", "FAST", "VES", "OV", "IRV",
+];
+
+// Compound/domain words that TTS engines routinely mangle because they're
+// not in a general dictionary — splitting or respelling them fixes it.
+const WORD_OVERRIDES = {
+  hoseline: "hose line",
+  hoselines: "hose lines",
+  standpipe: "stand pipe",
+  standpipes: "stand pipes",
+  cockloft: "cock loft",
+  backstep: "back step",
+  chauffeur: "show fer",
+  siamese: "sy uh meez",
+};
+
+// Cleans up text before handing it to the speech engine: spells out
+// fractions and measurements, expands the section symbol, forces acronyms
+// to be read letter-by-letter, and fixes known problem words. This is the
+// place to add more fixes as specific mispronunciations get reported.
+function normalizeForSpeech(text) {
+  if (!text) return text;
+  let out = text;
+
+  const fractionWords = { "¼": "quarter", "½": "half", "¾": "three quarter" };
+  out = out.replace(/(\d+)?(¼|½|¾)\s*["″]/g, (_, whole, frac) => {
+    return `${whole ? `${whole} and ` : ""}${fractionWords[frac]} inch`;
+  });
+  out = out.replace(/(\d+)?(¼|½|¾)/g, (_, whole, frac) => {
+    return `${whole ? `${whole} and ` : ""}${fractionWords[frac]}`;
+  });
+  out = out.replace(/(\d)\s*["″]/g, "$1 inch");
+  out = out.replace(/(\d)\s*['′]/g, "$1 foot");
+  out = out.replace(/§\s*/g, "section ");
+
+  for (const [word, spoken] of Object.entries(WORD_OVERRIDES)) {
+    out = out.replace(new RegExp(`\\b${word}\\b`, "gi"), spoken);
+  }
+
+  for (const acr of ACRONYMS) {
+    out = out.replace(new RegExp(`\\b${acr}\\b`, "g"), acr.split("").join(" "));
+  }
+  // Fallback: any other short ALL-CAPS token gets spelled out too.
+  out = out.replace(/\b[A-Z]{2,6}\b/g, (m) => m.split("").join(" "));
+
+  return out;
+}
 
 // Speaks `text` and resolves when speech finishes (or immediately if TTS
 // isn't available). Resolves on error too, so a bad utterance never stalls
 // the sequence.
-function speakAsync(text) {
+function speakAsync(text, { voice, rate = 0.95 } = {}) {
   return new Promise((resolve) => {
     if (!ttsSupported || !text) {
       resolve();
       return;
     }
     window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.rate = 0.95;
+    const utter = new SpeechSynthesisUtterance(normalizeForSpeech(text));
+    utter.rate = rate;
+    if (voice) utter.voice = voice;
     utter.onend = resolve;
     utter.onerror = resolve;
     window.speechSynthesis.speak(utter);
@@ -67,10 +166,16 @@ function countdownAsync(seconds, onTick) {
 }
 
 export default function App() {
-  // library state
-  const [library, setLibrary] = useState(null); // { bookTitle, chapters, totalCards, totalQuiz }
+  // library state — seeded from a local cache when available so a repeat
+  // visit paints instantly instead of showing a spinner; fetchLibrary()
+  // still runs in the background below to refresh it.
+  const [library, setLibrary] = useState(() => safeGetJSON(LIBRARY_CACHE_KEY));
   const [libraryError, setLibraryError] = useState(null);
-  const [libraryLoading, setLibraryLoading] = useState(true);
+  const [libraryLoading, setLibraryLoading] = useState(() => !safeGetJSON(LIBRARY_CACHE_KEY));
+
+  // remembers the last chapter/mode/size someone used so "Continue" can
+  // drop them straight back into it without re-picking anything
+  const [lastSession, setLastSession] = useState(() => safeGetJSON(LAST_SESSION_KEY));
 
   // navigation
   const [screen, setScreen] = useState("select-chapter");
@@ -78,6 +183,7 @@ export default function App() {
   const [activeTarget, setActiveTarget] = useState(null); // { id, name, cardCount, quizCount }
   const [mode, setMode] = useState(null); // "flashcards" | "quiz"
   const [size, setSize] = useState(null);
+  const [customizeOpen, setCustomizeOpen] = useState(false);
 
   // active pool (all content for activeTarget) + the sampled set in play
   const [pool, setPool] = useState(null); // { id, flashcards, quiz_questions }
@@ -105,25 +211,66 @@ export default function App() {
   const [audioPhase, setAudioPhase] = useState("question"); // question | delay | answer | pause
   const [countdown, setCountdown] = useState(0);
   const audioRunRef = useRef(0);
+  const [voices, setVoices] = useState([]);
+  const [voiceURI, setVoiceURI] = useState(() => {
+    try {
+      return localStorage.getItem(VOICE_STORAGE_KEY) || "";
+    } catch {
+      return "";
+    }
+  });
+
+  // Voice lists load async in most browsers — grab them now and again once
+  // the browser fires voiceschanged, and prefer an English voice by default.
+  useEffect(() => {
+    if (!ttsSupported) return;
+    function loadVoices() {
+      const list = window.speechSynthesis.getVoices();
+      if (!list.length) return;
+      setVoices(list);
+      setVoiceURI((current) => {
+        if (current && list.some((v) => v.voiceURI === current)) return current;
+        const preferred = list.find((v) => v.lang?.startsWith("en")) || list[0];
+        return preferred?.voiceURI || current;
+      });
+    }
+    loadVoices();
+    window.speechSynthesis.addEventListener("voiceschanged", loadVoices);
+    return () => window.speechSynthesis.removeEventListener("voiceschanged", loadVoices);
+  }, []);
+
+  function selectVoice(uri) {
+    setVoiceURI(uri);
+    try {
+      localStorage.setItem(VOICE_STORAGE_KEY, uri);
+    } catch {
+      // ignore — private browsing etc.
+    }
+  }
+
+  const selectedVoice = voices.find((v) => v.voiceURI === voiceURI) || null;
 
   useEffect(() => {
     let cancelled = false;
+    const hadCache = !!library;
     fetchLibrary()
       .then((data) => {
-        if (!cancelled) {
-          setLibrary(data);
-          setLibraryLoading(false);
-        }
+        if (cancelled) return;
+        setLibrary(data);
+        setLibraryLoading(false);
+        safeSetJSON(LIBRARY_CACHE_KEY, data);
       })
       .catch((err) => {
-        if (!cancelled) {
-          setLibraryError(err.message || "Failed to load the library.");
-          setLibraryLoading(false);
-        }
+        if (cancelled) return;
+        setLibraryLoading(false);
+        // if we already have cached data on screen, a refresh failure is
+        // silent — no reason to knock out a working view over it.
+        if (!hadCache) setLibraryError(err.message || "Failed to load the library.");
       });
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function chooseTarget(target) {
@@ -131,6 +278,7 @@ export default function App() {
     const maxCount = Math.max(target.cardCount, target.quizCount);
     const opts = sizeOptions(maxCount);
     setSize(opts[0] || maxCount);
+    setCustomizeOpen(false);
     setPool(null);
     setPoolError(null);
     setScreen("select-mode");
@@ -151,26 +299,35 @@ export default function App() {
     }
   }
 
-  function chooseMode(selectedMode) {
+  // target/useSize/useDelay default to current state so the existing
+  // in-flow buttons (which don't pass args) behave exactly as before;
+  // "Continue" and "Quick Study" pass them explicitly to jump straight in
+  // without touching select-chapter/select-mode state first.
+  function chooseMode(selectedMode, target = activeTarget, useSize = size) {
+    if (!target) return;
+    setActiveTarget(target);
     setMode(selectedMode);
     setScreen("generating");
-    ensurePool(activeTarget)
+    ensurePool(target)
       .then((loaded) => {
         if (selectedMode === "flashcards") {
-          setCards(sampleRandom(loaded.flashcards, size));
+          setCards(sampleRandom(loaded.flashcards, useSize));
           setCardIndex(0);
           setFlipped(false);
           setKnown(0);
           setReview(0);
           setScreen("study");
         } else {
-          setQuestions(sampleRandom(loaded.quiz_questions, size));
+          setQuestions(sampleRandom(loaded.quiz_questions, useSize));
           setQIndex(0);
           setSelected(null);
           setAnswered(false);
           setCorrectCount(0);
           setScreen("quiz");
         }
+        const session = { targetId: target.id, mode: selectedMode, size: useSize, answerDelay, voiceURI };
+        setLastSession(session);
+        safeSetJSON(LAST_SESSION_KEY, session);
       })
       .catch((err) => {
         setPoolError(err.message || "Failed to load this content.");
@@ -178,22 +335,57 @@ export default function App() {
       });
   }
 
-  function chooseAudioMode() {
+  function chooseAudioMode(target = activeTarget, useSize = size, useDelay = answerDelay) {
+    if (!target) return;
+    setActiveTarget(target);
     setMode("audio");
     setScreen("generating");
-    ensurePool(activeTarget)
+    ensurePool(target)
       .then((loaded) => {
-        setCards(sampleRandom(loaded.flashcards, size));
+        setCards(sampleRandom(loaded.flashcards, useSize));
         setAudioIndex(0);
         setAudioPlaying(true);
         setAudioPhase("question");
-        setCountdown(answerDelay);
+        setCountdown(useDelay);
         setScreen("audio-study");
+        const session = { targetId: target.id, mode: "audio", size: useSize, answerDelay: useDelay, voiceURI };
+        setLastSession(session);
+        safeSetJSON(LAST_SESSION_KEY, session);
       })
       .catch((err) => {
         setPoolError(err.message || "Failed to load this content.");
         setScreen("select-mode");
       });
+  }
+
+  function resumeLastSession() {
+    if (!lastSession || !library) return;
+    const target = findTargetById(library, lastSession.targetId);
+    if (!target) return;
+    const clampedSize = Math.min(
+      lastSession.size || 10,
+      Math.max(target.cardCount, target.quizCount) || 1
+    );
+    if (lastSession.mode === "audio") {
+      setAnswerDelay(lastSession.answerDelay || answerDelay);
+      chooseAudioMode(target, clampedSize, lastSession.answerDelay || answerDelay);
+    } else {
+      setSize(clampedSize);
+      chooseMode(lastSession.mode, target, clampedSize);
+    }
+  }
+
+  function quickStudy() {
+    if (!library || library.totalCards === 0) return;
+    const target = {
+      id: "book",
+      name: library.bookTitle || "Entire Book",
+      cardCount: library.totalCards,
+      quizCount: library.totalQuiz,
+    };
+    const quickSize = Math.min(10, library.totalCards);
+    setSize(quickSize);
+    chooseMode("flashcards", target, quickSize);
   }
 
   // Drives one card's full audio sequence: question -> delay countdown ->
@@ -211,7 +403,7 @@ export default function App() {
 
     (async () => {
       setAudioPhase("question");
-      await speakAsync(card.front);
+      await speakAsync(card.front, { voice: selectedVoice });
       if (!isCurrent()) return;
 
       setAudioPhase("delay");
@@ -219,7 +411,7 @@ export default function App() {
       if (!isCurrent()) return;
 
       setAudioPhase("answer");
-      await speakAsync(card.back);
+      await speakAsync(card.back, { voice: selectedVoice });
       if (!isCurrent()) return;
 
       setAudioPhase("pause");
@@ -238,7 +430,7 @@ export default function App() {
       if (ttsSupported) window.speechSynthesis.cancel();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, audioIndex, audioPlaying, answerDelay]);
+  }, [screen, audioIndex, audioPlaying, answerDelay, voiceURI]);
 
   function audioSkip(dir) {
     setAudioIndex((i) => Math.min(Math.max(i + dir, 0), cards.length - 1));
@@ -365,6 +557,48 @@ export default function App() {
               </div>
             )}
 
+            {library &&
+              lastSession &&
+              findTargetById(library, lastSession.targetId) &&
+              (() => {
+                const resumeTarget = findTargetById(library, lastSession.targetId);
+                return (
+                  <button
+                    onClick={resumeLastSession}
+                    className="group flex items-center gap-4 bg-[#C9A227] rounded-md px-4 py-4 text-left active:scale-[0.98] transition min-w-0"
+                  >
+                    <div className="shrink-0 w-11 h-11 rounded-sm bg-[#1B1A18]/10 flex items-center justify-center">
+                      <ArrowRight className="w-5 h-5 text-[#1B1A18]" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[10px] tracking-[0.2em] text-[#1B1A18]/70 font-bold uppercase truncate">
+                        Continue
+                      </div>
+                      <div className="font-bold leading-snug text-[#1B1A18] break-words">
+                        {resumeTarget.name} · {modeLabel(lastSession.mode)}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })()}
+
+            {library && library.totalCards > 0 && (
+              <button
+                onClick={quickStudy}
+                className="flex items-center gap-4 bg-transparent border border-dashed border-[#3A362F] rounded-md px-4 py-3.5 text-left hover:border-[#C9A227] active:scale-[0.98] transition min-w-0"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold text-sm leading-snug">
+                    Quick Study — 10 random flashcards
+                  </div>
+                  <div className="text-xs text-[#8B857A] mt-0.5 truncate">
+                    No picking — jumps straight in from the whole book
+                  </div>
+                </div>
+                <ArrowRight className="w-4 h-4 text-[#8B857A] shrink-0" />
+              </button>
+            )}
+
             {library && (
               <button
                 onClick={() =>
@@ -467,28 +701,89 @@ export default function App() {
               </div>
             )}
 
-            <label className="text-xs text-[#8B857A] uppercase tracking-wide font-bold mb-2">
-              How many questions/cards
-            </label>
-            <div className="relative mb-5">
-              <select
-                value={size ?? ""}
-                onChange={(e) => setSize(Number(e.target.value))}
-                className="w-full appearance-none bg-[#24221F] border border-[#3A362F] rounded-md px-4 py-3 text-sm font-medium focus:outline-none focus:border-[#C9A227]"
-              >
-                {sizeOptions(Math.max(activeTarget.cardCount, activeTarget.quizCount)).map(
-                  (n) => {
-                    const isAll = n === Math.max(activeTarget.cardCount, activeTarget.quizCount);
-                    return (
-                      <option key={n} value={n}>
-                        {isAll ? `All (${n})` : n}
-                      </option>
-                    );
-                  }
+            <button
+              onClick={() => setCustomizeOpen((o) => !o)}
+              className="flex items-center gap-1.5 text-xs text-[#8B857A] uppercase tracking-wide font-bold mb-4 hover:text-[#C9A227] transition"
+            >
+              Customize study set ({size} item{size === 1 ? "" : "s"})
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${customizeOpen ? "rotate-180" : ""}`} />
+            </button>
+
+            {customizeOpen && (
+              <div className="mb-5 flex flex-col gap-4">
+                <div>
+                  <label className="text-xs text-[#8B857A] uppercase tracking-wide font-bold mb-2 block">
+                    How many questions/cards
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={size ?? ""}
+                      onChange={(e) => setSize(Number(e.target.value))}
+                      className="w-full appearance-none bg-[#24221F] border border-[#3A362F] rounded-md px-4 py-3 text-sm font-medium focus:outline-none focus:border-[#C9A227]"
+                    >
+                      {sizeOptions(Math.max(activeTarget.cardCount, activeTarget.quizCount)).map(
+                        (n) => {
+                          const isAll = n === Math.max(activeTarget.cardCount, activeTarget.quizCount);
+                          return (
+                            <option key={n} value={n}>
+                              {isAll ? `All (${n})` : n}
+                            </option>
+                          );
+                        }
+                      )}
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-[#8B857A] absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                </div>
+
+                {ttsSupported && (
+                  <div>
+                    <label className="text-xs text-[#8B857A] uppercase tracking-wide font-bold mb-2 block">
+                      Audio answer delay
+                    </label>
+                    <div className="relative">
+                      <select
+                        value={answerDelay}
+                        onChange={(e) => setAnswerDelay(Number(e.target.value))}
+                        className="w-full appearance-none bg-[#24221F] border border-[#3A362F] rounded-md px-4 py-3 text-sm font-medium focus:outline-none focus:border-[#C9A227]"
+                      >
+                        {DELAY_OPTIONS.map((n) => (
+                          <option key={n} value={n}>
+                            {n} seconds
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown className="w-4 h-4 text-[#8B857A] absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    </div>
+                  </div>
                 )}
-              </select>
-              <ChevronDown className="w-4 h-4 text-[#8B857A] absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
-            </div>
+
+                {ttsSupported && voices.length > 0 && (
+                  <div>
+                    <label className="text-xs text-[#8B857A] uppercase tracking-wide font-bold mb-2 block">
+                      Voice
+                    </label>
+                    <div className="relative">
+                      <select
+                        value={voiceURI}
+                        onChange={(e) => selectVoice(e.target.value)}
+                        className="w-full appearance-none bg-[#24221F] border border-[#3A362F] rounded-md px-4 py-3 text-sm font-medium focus:outline-none focus:border-[#C9A227] min-w-0"
+                      >
+                        {voices.map((v) => (
+                          <option key={v.voiceURI} value={v.voiceURI}>
+                            {v.name} ({v.lang})
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown className="w-4 h-4 text-[#8B857A] absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    </div>
+                    <p className="text-[11px] text-[#8B857A] mt-1.5 break-words">
+                      Some voices pronounce technical terms more clearly than others.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="flex flex-col gap-3">
               <button
@@ -525,7 +820,7 @@ export default function App() {
               </button>
 
               <button
-                onClick={chooseAudioMode}
+                onClick={() => chooseAudioMode()}
                 disabled={activeTarget.cardCount === 0 || !ttsSupported}
                 className="group flex items-center gap-4 bg-[#24221F] border border-[#3A362F] rounded-md px-4 py-5 text-left hover:border-[#C9A227] active:scale-[0.98] transition disabled:opacity-40 disabled:pointer-events-none min-w-0"
               >
@@ -543,28 +838,6 @@ export default function App() {
                 <ArrowRight className="w-4 h-4 text-[#8B857A] group-hover:text-[#C9A227] shrink-0" />
               </button>
             </div>
-
-            {ttsSupported && (
-              <div className="mt-5">
-                <label className="text-xs text-[#8B857A] uppercase tracking-wide font-bold mb-2 block">
-                  Audio answer delay
-                </label>
-                <div className="relative">
-                  <select
-                    value={answerDelay}
-                    onChange={(e) => setAnswerDelay(Number(e.target.value))}
-                    className="w-full appearance-none bg-[#24221F] border border-[#3A362F] rounded-md px-4 py-3 text-sm font-medium focus:outline-none focus:border-[#C9A227]"
-                  >
-                    {DELAY_OPTIONS.map((n) => (
-                      <option key={n} value={n}>
-                        {n} seconds
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="w-4 h-4 text-[#8B857A] absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
-                </div>
-              </div>
-            )}
           </div>
         )}
 
